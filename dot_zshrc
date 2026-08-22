@@ -1,0 +1,103 @@
+# System
+alias w="cd /Users/fran/Workspace"
+alias l="ls -la"
+# Projects
+alias dev="npm run dev"
+alias test="npm run test"
+alias watch="npm run test:watch"
+alias build="npm run build"
+alias preview="npm run preview"
+alias start="npm run start"
+alias debug="npm run debug"
+alias cov="npm run test:coverage"
+alias vieja-confiable="rm -rf node_modules && rm -rf package-lock.json && npm install"
+# Git
+alias pull="git pull"
+alias push="git push"
+alias fetch="git fetch"
+alias merge="git merge"
+alias gce="gitmoji -c"
+alias log="git log --oneline"
+alias gco="git checkout"
+alias branch="git branch"
+alias stash="git stash"
+alias pop="git stash pop"
+# JetBrains
+alias ws='nohup webstorm . > /dev/null 2>&1 &'
+alias py='nohup pycharm . > /dev/null 2>&1 &'
+alias rr='nohup rustrover . > /dev/null 2>&1 &'
+
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
+[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"  # This loads nvm bash_completion
+
+# place this after nvm initialization!
+autoload -U add-zsh-hook
+
+load-nvmrc() {
+  local nvmrc_path
+  nvmrc_path="$(nvm_find_nvmrc)"
+
+  if [ -n "$nvmrc_path" ]; then
+    local nvmrc_node_version
+    nvmrc_node_version=$(nvm version "$(cat "${nvmrc_path}")")
+
+    if [ "$nvmrc_node_version" = "N/A" ]; then
+      nvm install
+    elif [ "$nvmrc_node_version" != "$(nvm version)" ]; then
+      nvm use
+    fi
+  elif [ -n "$(PWD=$OLDPWD nvm_find_nvmrc)" ] && [ "$(nvm version)" != "$(nvm version default)" ]; then
+    echo "Reverting to nvm default version"
+    nvm use default
+  fi
+}
+
+add-zsh-hook chpwd load-nvmrc
+load-nvmrc
+
+export PATH=$PATH:/Applications/WebStorm.app/Contents/MacOS:/Applications/PyCharm.app/Contents/MacOS:/Applications/RustRover.app/Contents/MacOS
+export PYENV_ROOT="$HOME/.pyenv"
+export PATH="$PYENV_ROOT/bin:$PATH"
+if command -v pyenv 1>/dev/null 2>&1; then
+  eval "$(pyenv init --path)"
+fi
+
+PATH=~/.console-ninja/.bin:$PATH
+
+gcn() { git commit -m "$1" --no-verify; }
+export HISTTIMEFORMAT="%Y-%m-%d %H:%M:%S "
+
+# Created by `pipx` on 2025-07-16 16:26:28
+export PATH="$PATH:/Users/fran/.local/bin"
+
+# rust
+export RUST_HOME="$HOME/.cargo/env"
+case ":$PATH:" in
+  *":$RUST_HOME:"*) ;;
+  *) export PATH="$RUST_HOME:$PATH" ;;
+esac
+# rust end
+
+
+# solana
+export SOLANA_HOME="$HOME/.local/share/solana/install/active_release/bin"
+case ":$PATH:" in
+  *":$SOLANA_HOME:"*) ;;
+  *) export PATH="$SOLANA_HOME:$PATH" ;;
+esac
+# solana end
+
+
+# Added by Antigravity
+export PATH="/Users/fran/.antigravity/antigravity/bin:$PATH"
+
+# bun completions
+[ -s "/Users/fran/.bun/_bun" ] && source "/Users/fran/.bun/_bun"
+
+# Added by LM Studio CLI (lms)
+export PATH="$PATH:/Users/fran/.lmstudio/bin"
+# End of LM Studio CLI section
+
+
+if command -v wt >/dev/null 2>&1; then eval "$(command wt config shell init zsh)"; fi
