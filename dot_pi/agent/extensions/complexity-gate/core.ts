@@ -12,9 +12,11 @@ export type ComplexityReport = {
   threshold: number;
   functions: FunctionComplexity[];
   violations: FunctionComplexity[];
+  allowed: boolean;
 };
 
 const SUPPORTED_EXTENSIONS = new Set([".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs"]);
+const ALLOW_MARKER = "complexity-gate:allow";
 
 export function isSupportedPath(path: string): boolean {
   const lower = path.toLowerCase();
@@ -29,18 +31,22 @@ export function isSupportedPath(path: string): boolean {
 export function analyzeSource(path: string, source: string, threshold: number): ComplexityReport {
   const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, scriptKindFromPath(path));
   const functions = collectFunctions(sourceFile);
+  const allowed = source.includes(ALLOW_MARKER);
 
   return {
     path,
     threshold,
     functions,
-    violations: functions.filter((entry) => entry.complexity > threshold),
+    violations: allowed ? [] : functions.filter((entry) => entry.complexity > threshold),
+    allowed,
   };
 }
 
 export function formatReport(report: ComplexityReport): string {
   if (report.violations.length === 0) {
-    return `Complexity gate: PASS ${report.path}`;
+    return report.allowed
+      ? `Complexity gate: PASS ${report.path} (allowed by complexity-gate:allow)`
+      : `Complexity gate: PASS ${report.path}`;
   }
 
   return [
@@ -72,40 +78,42 @@ function collectFunctions(sourceFile: ts.SourceFile): FunctionComplexity[] {
   return functions;
 }
 
+function isBranch(child: ts.Node): boolean {
+  return (
+    ts.isIfStatement(child) ||
+    ts.isForStatement(child) ||
+    ts.isForInStatement(child) ||
+    ts.isForOfStatement(child) ||
+    ts.isWhileStatement(child) ||
+    ts.isDoStatement(child) ||
+    ts.isCatchClause(child) ||
+    ts.isConditionalExpression(child) ||
+    ts.isSwitchStatement(child) ||
+    (ts.isBinaryExpression(child) &&
+      (child.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+        child.operatorToken.kind === ts.SyntaxKind.BarBarToken))
+  );
+}
+
 function countComplexity(node: ts.Node): number {
   let complexity = 1;
 
-  const visit = (child: ts.Node) => {
+  // Flat branches (guard clauses, early returns) cost 1; nested branches cost
+  // 1 + depth so pyramid-shaped code is penalized while flat code is not.
+  const visit = (child: ts.Node, depth: number) => {
     if (child !== node && isTrackedFunction(child)) {
       return;
     }
 
-    if (
-      ts.isIfStatement(child) ||
-      ts.isForStatement(child) ||
-      ts.isForInStatement(child) ||
-      ts.isForOfStatement(child) ||
-      ts.isWhileStatement(child) ||
-      ts.isDoStatement(child) ||
-      ts.isCatchClause(child) ||
-      ts.isConditionalExpression(child) ||
-      ts.isCaseClause(child)
-    ) {
-      complexity += 1;
+    const branch = child !== node && isBranch(child);
+    if (branch) {
+      complexity += 1 + depth;
     }
 
-    if (
-      ts.isBinaryExpression(child) &&
-      (child.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
-        child.operatorToken.kind === ts.SyntaxKind.BarBarToken)
-    ) {
-      complexity += 1;
-    }
-
-    ts.forEachChild(child, visit);
+    ts.forEachChild(child, (grandchild) => visit(grandchild, branch ? depth + 1 : depth));
   };
 
-  ts.forEachChild(node, visit);
+  ts.forEachChild(node, (child) => visit(child, 0));
   return complexity;
 }
 

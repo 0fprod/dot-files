@@ -50,10 +50,11 @@ test("The complexity analyzer counts branching and looping paths inside a functi
     5,
   );
 
+  // if +1, && nested +2, for +1, nested if +2, ternary +3, switch +1 => 11
   assert.deepEqual(report.functions, [
     {
       name: "classify",
-      complexity: 8,
+      complexity: 11,
       line: 1,
       column: 1,
     },
@@ -61,11 +62,96 @@ test("The complexity analyzer counts branching and looping paths inside a functi
   assert.deepEqual(report.violations, [
     {
       name: "classify",
-      complexity: 8,
+      complexity: 11,
       line: 1,
       column: 1,
     },
   ]);
+});
+
+test("Guard clauses stay cheap at depth zero while nested branches are penalized", () => {
+  const flat = analyzeSource(
+    "guards.ts",
+    `export function handle(value?: number) {
+  if (!value) return 0;
+  if (value < 0) return 0;
+  if (value === 0) return 0;
+  if (value > 100) return 0;
+  if (value % 2 === 0) return 0;
+  return value;
+}
+`,
+    6,
+  );
+
+  assert.equal(flat.functions[0]?.complexity, 6);
+  assert.deepEqual(flat.violations, []);
+
+  const nested = analyzeSource(
+    "pyramid.ts",
+    `export function pyramid(value?: number) {
+  if (value) {
+    if (value > 1) {
+      if (value > 2) {
+        return "deep";
+      }
+    }
+  }
+  return "shallow";
+}
+`,
+    6,
+  );
+
+  assert.deepEqual(nested.violations, [
+    {
+      name: "pyramid",
+      complexity: 7,
+      line: 1,
+      column: 1,
+    },
+  ]);
+});
+
+test("Switch dispatch counts once regardless of case count and the allow marker whitelists a file", () => {
+  const dispatch = analyzeSource(
+    "dispatch.ts",
+    `export function label(code: "a" | "b" | "c" | "d") {
+  switch (code) {
+    case "a":
+      return 1;
+    case "b":
+      return 2;
+    case "c":
+      return 3;
+    default:
+      return 0;
+  }
+}
+`,
+    12,
+  );
+
+  assert.equal(dispatch.functions[0]?.complexity, 2);
+  assert.deepEqual(dispatch.violations, []);
+
+  const allowed = analyzeSource(
+    "parser.ts",
+    `// complexity-gate:allow
+export function parse(input: string) {
+  if (input.startsWith("{")) {
+    if (input.includes(":")) {
+      return "object";
+    }
+  }
+  return "plain";
+}
+`,
+    2,
+  );
+
+  assert.equal(allowed.allowed, true);
+  assert.deepEqual(allowed.violations, []);
 });
 
 test("The complexity analyzer reports methods and arrow functions separately from their parents", () => {
@@ -96,7 +182,7 @@ test("The complexity analyzer reports methods and arrow functions separately fro
   assert.deepEqual(report.functions, [
     {
       name: "save",
-      complexity: 3,
+      complexity: 4,
       line: 2,
       column: 3,
     },
@@ -110,7 +196,7 @@ test("The complexity analyzer reports methods and arrow functions separately fro
   assert.deepEqual(report.violations, [
     {
       name: "save",
-      complexity: 3,
+      complexity: 4,
       line: 2,
       column: 3,
     },
@@ -148,6 +234,6 @@ test("The complexity formatter emits a compact violation summary for supported T
   assert.equal(isSupportedPath("src/invoice.json"), false);
   assert.equal(
     formatReport(report),
-    "Complexity gate: FAIL src/invoice.ts\n- classify line 1 col 25 complexity 8 > 5",
+    "Complexity gate: FAIL src/invoice.ts\n- classify line 1 col 25 complexity 11 > 5",
   );
 });

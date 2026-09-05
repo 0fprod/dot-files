@@ -4,8 +4,9 @@ import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { analyzeSource, formatReport, isSupportedPath, type ComplexityReport } from "./core.ts";
 
-const DEFAULT_THRESHOLD = 8;
+const DEFAULT_THRESHOLD = 12;
 const AUTO_CHECK_TOOL_NAMES = new Set(["edit", "write"]);
+const previousViolations = new Map<string, Set<string>>();
 const COMPLEXITY_CHECK_PARAMS = Type.Object({
   paths: Type.Optional(
     Type.Array(Type.String({ description: "Relative path to a TS/JS file. Omit to analyze changed files." })),
@@ -14,7 +15,7 @@ const COMPLEXITY_CHECK_PARAMS = Type.Object({
 
 export default function complexityGate(pi: ExtensionAPI) {
   pi.on("before_agent_start", (event) => ({
-    systemPrompt: `${event.systemPrompt}\n\nAn automatic complexity gate is active. After edit and write tool calls, changed TS/JS files are analyzed with a deterministic cyclomatic complexity checker. Keep every function at complexity ${DEFAULT_THRESHOLD} or below. If the gate fails, reduce complexity before finalizing.`,
+    systemPrompt: `${event.systemPrompt}\n\nAn automatic complexity gate is active. After edit and write tool calls, changed TS/JS files are analyzed with a deterministic complexity checker (flat branches cost 1, nested branches cost more). Keep every function at complexity ${DEFAULT_THRESHOLD} or below. If the gate fails, reduce complexity before finalizing. If a file legitimately needs higher complexity (dispatch tables, parsers, state machines), mark it with a // complexity-gate:allow comment instead of fragmenting it artificially.`,
   }));
 
   pi.on("tool_result", async (event, ctx) => {
@@ -28,7 +29,22 @@ export default function complexityGate(pi: ExtensionAPI) {
     }
 
     const report = await analyzePath(ctx.cwd, path, DEFAULT_THRESHOLD);
-    if (!report || report.violations.length === 0) {
+    if (!report) {
+      return;
+    }
+
+    const key = resolve(ctx.cwd, path);
+    if (report.violations.length === 0) {
+      previousViolations.delete(key);
+      return;
+    }
+
+    // Only interrupt when a violation is new for this file; pre-existing
+    // violations the agent did not worsen should not nag every edit.
+    const current = new Set(report.violations.map((entry) => `${entry.name}:${entry.line}`));
+    const previous = previousViolations.get(key);
+    previousViolations.set(key, current);
+    if (previous !== undefined && ![...current].some((signature) => !previous.has(signature))) {
       return;
     }
 
@@ -45,8 +61,8 @@ export default function complexityGate(pi: ExtensionAPI) {
   pi.registerTool({
     name: "complexity_check",
     label: "Complexity Check",
-    description: "Check deterministic cyclomatic complexity for TS/JS files changed in git or explicit relative paths.",
-    promptSnippet: "Analyze TS/JS file complexity with a deterministic threshold of 8",
+    description: "Check deterministic complexity for TS/JS files changed in git or explicit relative paths.",
+    promptSnippet: "Analyze TS/JS file complexity with a deterministic threshold of 12",
     promptGuidelines: [
       "Use complexity_check after implementing or refactoring TS/JS code when you need an explicit complexity result.",
     ],
@@ -126,6 +142,7 @@ function toSerializableReport(report: ComplexityReport) {
     threshold: report.threshold,
     functions: report.functions,
     violations: report.violations,
+    allowed: report.allowed,
   };
 }
 
