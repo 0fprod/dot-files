@@ -15,7 +15,7 @@ const COMPLEXITY_CHECK_PARAMS = Type.Object({
 
 export default function complexityGate(pi: ExtensionAPI) {
   pi.on("before_agent_start", (event) => ({
-    systemPrompt: `${event.systemPrompt}\n\nAn automatic complexity gate is active. After edit and write tool calls, changed TS/JS files are analyzed with a deterministic complexity checker (flat branches cost 1, nested branches cost more). Keep every function at complexity ${DEFAULT_THRESHOLD} or below. If the gate fails, reduce complexity before finalizing. If a file legitimately needs higher complexity (dispatch tables, parsers, state machines), mark it with a // complexity-gate:allow comment instead of fragmenting it artificially.`,
+    systemPrompt: `${event.systemPrompt}\n\nAn automatic complexity gate is active. After edit and write tool calls, changed TS/JS files are analyzed with a deterministic complexity checker (flat branches cost 1, nested branches cost more). Keep every function at complexity ${DEFAULT_THRESHOLD} or below. If the gate fails, reduce complexity before finalizing; see the codebase-design skill for deepening and how to narrow the interface at the seam. If a file legitimately needs higher complexity (dispatch tables, parsers, state machines), mark it with a // complexity-gate:allow comment instead of fragmenting it artificially.`,
   }));
 
   pi.on("tool_result", async (event, ctx) => {

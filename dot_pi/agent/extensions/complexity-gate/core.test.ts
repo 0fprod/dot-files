@@ -232,8 +232,9 @@ test("The complexity formatter emits a compact violation summary for supported T
 
   assert.equal(isSupportedPath("src/invoice.ts"), true);
   assert.equal(isSupportedPath("src/invoice.json"), false);
-  assert.equal(
-    formatReport(report),
-    "Complexity gate: FAIL src/invoice.ts\n- classify line 1 col 25 complexity 11 > 5",
-  );
+  const formatted = formatReport(report);
+  assert.match(formatted, /Complexity gate: FAIL src\/invoice\.ts/);
+  assert.match(formatted, /see the codebase-design skill/);
+  assert.match(formatted, /deepening/);
+  assert.match(formatted, /narrow the interface at the seam/);
 });

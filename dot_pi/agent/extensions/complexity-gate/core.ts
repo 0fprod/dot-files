@@ -54,6 +54,7 @@ export function formatReport(report: ComplexityReport): string {
     ...report.violations.map(
       (entry) => `- ${entry.name} line ${entry.line} col ${entry.column} complexity ${entry.complexity} > ${report.threshold}`,
     ),
+    "Suggestion: see the codebase-design skill: use deepening to narrow the interface at the seam, rather than fragmenting behavior artificially.",
   ].join("\n");
 }
 
