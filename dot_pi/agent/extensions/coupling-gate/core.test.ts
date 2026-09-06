@@ -3,7 +3,13 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { analyzeProject, formatReport, type CouplingReport } from "./core.ts";
+import {
+  analyzeProject,
+  evaluateGate,
+  formatReport,
+  getGateState,
+  type CouplingReport,
+} from "./core.ts";
 
 const fixtureRoot = mkdtempSync(join(tmpdir(), "coupling-gate-core-"));
 test.after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
@@ -79,7 +85,29 @@ test("reports a changed-file cycle and names its weakest edge", () => {
   assert.deepEqual(report.cycles.map((cycle) => cycle.files), [["a.ts", "b.ts", "c.ts"]]);
   assert.equal(report.cycles[0]?.weakest.from, "a.ts");
   assert.equal(report.cycles[0]?.weakest.to, "b.ts");
-  assert.match(formatReport(report), /break a\.ts → b\.ts/);
+  const formatted = formatReport(report);
+  assert.match(formatted, /break a\.ts → b\.ts/);
+  assert.match(formatted, /imports: b\.ts/);
+});
+
+test("fails only newly worsening coupling and lets allow bypass budgets, not cycles", () => {
+  const root = join(fixtureRoot, "gate");
+  write(root, "tsconfig.json", JSON.stringify({ compilerOptions: {} }));
+  write(root, "a.ts", 'import { b } from "./b";\nexport const a = b;\n');
+  write(root, "b.ts", "export const b = 1;\n");
+
+  const first = analyzeProject(root, ["a.ts"]);
+  const firstFile = first.files.find((file) => file.path === "a.ts")!;
+  const baseline = getGateState(first, firstFile.path);
+  assert.deepEqual(evaluateGate(baseline, firstFile, first, false), []);
+
+  write(root, "b.ts", 'import { a } from "./a";\nexport const b = a;\n');
+  const worsened = analyzeProject(root, ["a.ts"]);
+  const worsenedFile = worsened.files.find((file) => file.path === "a.ts")!;
+  const failures = evaluateGate(baseline, worsenedFile, worsened, false);
+  assert.equal(failures.length, 1);
+  assert.match(failures[0]!, /cycle.*a\.ts.*b\.ts/);
+  assert.equal(evaluateGate(baseline, worsenedFile, worsened, true).length, 1);
 });
 
 test("enforces declared folder layer rules", () => {

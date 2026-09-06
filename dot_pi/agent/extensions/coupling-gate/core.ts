@@ -48,6 +48,13 @@ export type CouplingReport = {
   layerViolations: LayerViolation[];
 };
 
+export type GateState = {
+  cycles: Set<string>;
+  crossEdges: Set<string>;
+  ce: number;
+  ctxCost: number;
+};
+
 type SourceFile = {
   absolutePath: string;
   relativePath: string;
@@ -140,10 +147,55 @@ export function countLines(source: string): number {
   return lines.length;
 }
 
+export function getGateState(report: CouplingReport, path: string): GateState {
+  const file = report.files.find((entry) => entry.path === path);
+  if (!file) {
+    return { cycles: new Set(), crossEdges: new Set(), ce: 0, ctxCost: 0 };
+  }
+  return {
+    cycles: new Set(report.cycles.filter((cycle) => cycle.files.includes(path)).map((cycle) => cycle.files.join(" ↔ "))),
+    crossEdges: new Set(report.crossEdges.filter((edge) => edge.from === path || edge.to === path).map(edgeKey)),
+    ce: file.ce,
+    ctxCost: file.contextCost,
+  };
+}
+
+export function evaluateGate(previous: GateState | undefined, file: FileMetrics, report: CouplingReport, allowed: boolean): string[] {
+  const current = getGateState(report, file.path);
+  if (!previous) {
+    return [];
+  }
+
+  const failures: string[] = [];
+  for (const cycle of [...current.cycles].filter((entry) => !previous.cycles.has(entry))) {
+    const weakest = report.cycles.find((entry) => entry.files.join(" ↔ ") === cycle)?.weakest;
+    failures.push(`new cycle ${cycle}${weakest ? `; break ${weakest.from} → ${weakest.to}` : ""}`);
+  }
+  if (!allowed) {
+    for (const crossing of [...current.crossEdges].filter((entry) => !previous.crossEdges.has(entry))) {
+      failures.push(`new folder crossing ${crossing}`);
+    }
+    if (file.ce > report.ceBudget && file.ce > previous.ce) {
+      failures.push(`${file.path} Ce ${file.ce} > ${report.ceBudget}`);
+    }
+    if (file.contextCost > report.contextBudget && file.contextCost > previous.ctxCost) {
+      failures.push(`${file.path} context cost ${file.contextCost} > ${report.contextBudget}`);
+    }
+  }
+  for (const violation of report.layerViolations) {
+    if (violation.edge.from === file.path || violation.edge.to === file.path) {
+      failures.push(`layer rule: ${violation.edge.from} → ${violation.edge.to}`);
+    }
+  }
+  return failures;
+}
+
 export function formatReport(report: CouplingReport): string {
   const lines = [`Coupling gate: ${report.files.length} file(s)`];
   for (const file of report.files) {
-    lines.push(`- ${file.path}: Ce ${file.ce}, Ca ${file.ca}, context ${file.contextCost}/${report.contextBudget}`);
+    const topImports = [...file.imports].sort((a, b) => b.uses - a.uses || compareEdges(a, b)).slice(0, 5).map(edgeKey);
+    const imports = topImports.length > 0 ? `, imports: ${topImports.join(", ")}` : "";
+    lines.push(`- ${file.path}: Ce ${file.ce}, Ca ${file.ca}, context ${file.contextCost}/${report.contextBudget}${imports}`);
   }
   if (report.crossEdges.length > 0) {
     lines.push("Folder crossings:", ...report.crossEdges.map((edge) => `- ${edge.from} → ${edge.to} (${edge.uses} use(s))`));
@@ -314,11 +366,15 @@ function matchesLayer(pattern: string, value: string): boolean {
 }
 
 function folderOf(path: string): string {
-  return path.split("/")[0] ?? path;
+  return path.includes("/") ? path.split("/")[0]! : ".";
 }
 
 function relativePath(root: string, path: string): string {
   return relative(root, path).split("\\").join("/");
+}
+
+function edgeKey(edge: DependencyEdge): string {
+  return `${edge.from} → ${edge.to}`;
 }
 
 function compareEdges(a: DependencyEdge, b: DependencyEdge): number {
