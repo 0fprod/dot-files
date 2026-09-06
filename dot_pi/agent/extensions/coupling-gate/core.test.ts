@@ -74,6 +74,19 @@ test("computes inverse Ca, folder crossings, and follows a re-export-only barrel
   ]);
 });
 
+test("scans tests for inverse dependencies without counting test files as modules", () => {
+  const root = join(fixtureRoot, "test-dependants");
+  write(root, "tsconfig.json", JSON.stringify({ compilerOptions: {} }));
+  write(root, "shared/value.ts", "export const value = 1;\n");
+  write(root, "pricing/quote.ts", 'import { value } from "../shared/value";\nexport const quote = value;\n');
+  write(root, "pricing/quote.test.ts", 'import { quote } from "./quote";\nvoid quote;\n');
+
+  const report = analyzeProject(root);
+  assert.equal(report.files.some((file) => file.path.endsWith(".test.ts")), false);
+  assert.equal(report.files.find((file) => file.path === "pricing/quote.ts")?.ca, 1);
+  assert.equal(report.files.find((file) => file.path === "shared/value.ts")?.ca, 1);
+});
+
 test("reports a changed-file cycle and names its weakest edge", () => {
   const root = join(fixtureRoot, "cycles");
   write(root, "tsconfig.json", JSON.stringify({ compilerOptions: {} }));

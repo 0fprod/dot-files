@@ -91,7 +91,7 @@ export default function couplingGate(pi: ExtensionAPI) {
       }
 
       const report = analyzeProject(ctx.cwd, supported);
-      ctx.ui.notify(`coupling report ${report.files.length} file(s)`, "info");
+      ctx.ui.notify(formatReport(report), report.layerViolations.length > 0 || report.cycles.length > 0 ? "warning" : "info");
     },
   });
 }

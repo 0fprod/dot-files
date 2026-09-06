@@ -8,6 +8,8 @@ export const CONTEXT_BUDGET = 2500;
 const ALLOW_MARKER = "coupling-gate:allow";
 const MAX_BARREL_DEPTH = 5;
 const EXCLUDED_DIRECTORIES = new Set(["node_modules", "dist", "build", ".next", "out", "coverage"]);
+const sourceCache = new Map<string, { mtimeMs: number; size: number; source: string }>();
+const importCache = new Map<string, { source: string; imports: RawImport[] }>();
 
 export type DependencyEdge = {
   from: string;
@@ -73,7 +75,7 @@ export function analyzeProject(repoRoot: string, changedPaths: string[] = []): C
   const countedByPath = new Map(countedFiles.map((file) => [file.absolutePath, file]));
   const edgeMap = new Map<string, DependencyEdge>();
 
-  for (const file of countedFiles) {
+  for (const file of allFiles) {
     for (const rawImport of collectImports(file.absolutePath, file.source)) {
       for (const target of resolveTargets(rawImport.specifier, file.absolutePath, root, new Set(), 0)) {
         if (!countedByPath.has(target)) {
@@ -93,9 +95,10 @@ export function analyzeProject(repoRoot: string, changedPaths: string[] = []): C
     }
   }
 
-  const edges = [...edgeMap.values()].sort(compareEdges);
+  const allEdges = [...edgeMap.values()].sort(compareEdges);
+  const edges = allEdges.filter((edge) => countedByPath.has(resolve(root, edge.from)));
   const incoming = new Map<string, number>();
-  for (const edge of edges) {
+  for (const edge of allEdges) {
     incoming.set(edge.to, (incoming.get(edge.to) ?? 0) + 1);
   }
 
@@ -221,10 +224,9 @@ function scanSourceFiles(root: string): SourceFile[] {
         continue;
       }
       const absolutePath = resolve(directory, entry.name);
-      try {
-        files.push({ absolutePath, relativePath: relativePath(root, absolutePath), source: readFileSync(absolutePath, "utf8") });
-      } catch {
-        // A file that disappears during a check is not a dependency input.
+      const source = readCachedSource(absolutePath);
+      if (source !== undefined) {
+        files.push({ absolutePath, relativePath: relativePath(root, absolutePath), source });
       }
     }
   };
@@ -232,7 +234,22 @@ function scanSourceFiles(root: string): SourceFile[] {
   return files.sort((a, b) => a.relativePath.localeCompare(b.relativePath));
 }
 
+function readCachedSource(path: string): string | undefined {
+  try {
+    const metadata = statSync(path);
+    const cached = sourceCache.get(path);
+    if (cached?.mtimeMs === metadata.mtimeMs && cached.size === metadata.size) return cached.source;
+    const source = readFileSync(path, "utf8");
+    sourceCache.set(path, { mtimeMs: metadata.mtimeMs, size: metadata.size, source });
+    return source;
+  } catch {
+    return undefined;
+  }
+}
+
 function collectImports(filePath: string, source: string): RawImport[] {
+  const cached = importCache.get(filePath);
+  if (cached?.source === source) return cached.imports;
   const sourceFile = ts.createSourceFile(filePath, source, ts.ScriptTarget.Latest, true, scriptKindFromPath(filePath));
   const imports: RawImport[] = [];
   const add = (specifier: string, weight: 0 | 1) => imports.push({ specifier, weight });
@@ -250,6 +267,7 @@ function collectImports(filePath: string, source: string): RawImport[] {
     ts.forEachChild(node, visit);
   };
   visit(sourceFile);
+  importCache.set(filePath, { source, imports });
   return imports;
 }
 
@@ -279,7 +297,8 @@ function resolveTargets(specifier: string, containingFile: string, root: string,
   if (depth >= MAX_BARREL_DEPTH || seen.has(target) || !isReExportOnlyBarrel(target)) return [target];
 
   const nextSeen = new Set(seen).add(target);
-  const targets = collectImports(target, readFileSync(target, "utf8"))
+  const barrelSource = readCachedSource(target);
+  const targets = barrelSource === undefined ? [] : collectImports(target, barrelSource)
     .flatMap((entry) => resolveTargets(entry.specifier, target, root, nextSeen, depth + 1));
   return targets.length > 0 ? [...new Set(targets)] : [target];
 }
@@ -287,7 +306,9 @@ function resolveTargets(specifier: string, containingFile: string, root: string,
 function isReExportOnlyBarrel(path: string): boolean {
   if (!path.endsWith("/index.ts") && !path.endsWith("/index.tsx") && !path.endsWith("/index.js")) return false;
   try {
-    const sourceFile = ts.createSourceFile(path, readFileSync(path, "utf8"), ts.ScriptTarget.Latest, true, scriptKindFromPath(path));
+    const source = readCachedSource(path);
+    if (source === undefined) return false;
+    const sourceFile = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, scriptKindFromPath(path));
     return sourceFile.statements.length > 0 && sourceFile.statements.every((statement) => ts.isExportDeclaration(statement) && !!statement.moduleSpecifier);
   } catch {
     return false;
