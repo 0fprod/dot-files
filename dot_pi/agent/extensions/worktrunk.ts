@@ -12,6 +12,15 @@ import {
 
 const WORKTRUNK_TOOL_NAMES = new Set(["wt_list", "wt_switch", "wt_remove", "wt_merge"]);
 
+function appendOption(args: string[], enabled: unknown, ...values: Array<string | undefined>): void {
+	if (enabled) args.push(...values.filter((value): value is string => value !== undefined));
+}
+
+async function confirmMutation(ctx: { hasUI: boolean; ui: { confirm(title: string, message: string): Promise<boolean> } }, title: string, message: string): Promise<boolean> {
+	if (!ctx.hasUI) return true;
+	return ctx.ui.confirm(title, message);
+}
+
 async function runWt(
 	pi: ExtensionAPI,
 	args: string[],
@@ -91,12 +100,15 @@ export default function worktrunkExtension(pi: ExtensionAPI) {
 			noHooks: Type.Optional(Type.Boolean({ description: "Skip Worktrunk hooks. Default false." })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			const args = ["--yes", "switch", "--format", "json", "--no-cd"];
-			if (params.create) args.push("--create");
-			if (params.base) args.push("--base", params.base);
-			if (params.noHooks) args.push("--no-hooks");
+			const args = ["switch", "--format", "json", "--no-cd"];
+			appendOption(args, params.create, "--create");
+			appendOption(args, params.base, "--base", params.base);
+			appendOption(args, params.noHooks, "--no-hooks");
 			args.push(params.branch);
-			return runWt(pi, args, ctx, params.cwd);
+			const switched = await runWt(pi, args, ctx, params.cwd);
+			if (switched.details.exitCode !== 0) return switched;
+			const copied = await runWt(pi, ["step", "copy-ignored", "--to", params.branch, "--require-include", "--format", "json"], ctx, params.cwd);
+			return { content: [...switched.content, ...copied.content], details: { switch: switched.details, copyIgnored: copied.details } };
 		},
 	});
 
@@ -113,15 +125,12 @@ export default function worktrunkExtension(pi: ExtensionAPI) {
 			noHooks: Type.Optional(Type.Boolean({ description: "Skip Worktrunk hooks." })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			if (ctx.hasUI) {
-				const ok = await ctx.ui.confirm("Remove Worktrunk worktree?", `wt remove ${params.target}`);
-				if (!ok) return { content: [{ type: "text", text: "Cancelled by user." }], details: { cancelled: true } };
-			}
-			const args = ["--yes", "remove", "--format", "json", "--foreground"];
-			if (params.force) args.push("--force");
-			if (params.forceDelete) args.push("--force-delete");
-			if (params.noDeleteBranch) args.push("--no-delete-branch");
-			if (params.noHooks) args.push("--no-hooks");
+			if (!(await confirmMutation(ctx, "Remove Worktrunk worktree?", `wt remove ${params.target}`))) return { content: [{ type: "text", text: "Cancelled by user." }], details: { cancelled: true } };
+			const args = ["remove", "--format", "json", "--foreground"];
+			appendOption(args, params.force, "--force");
+			appendOption(args, params.forceDelete, "--force-delete");
+			appendOption(args, params.noDeleteBranch, "--no-delete-branch");
+			appendOption(args, params.noHooks, "--no-hooks");
 			args.push(params.target);
 			return runWt(pi, args, ctx, params.cwd);
 		},
@@ -143,19 +152,16 @@ export default function worktrunkExtension(pi: ExtensionAPI) {
 			noHooks: Type.Optional(Type.Boolean({ description: "Skip Worktrunk hooks." })),
 		}),
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			if (ctx.hasUI) {
-				const ok = await ctx.ui.confirm("Merge Worktrunk branch?", `wt merge ${params.target ?? "<default>"}`);
-				if (!ok) return { content: [{ type: "text", text: "Cancelled by user." }], details: { cancelled: true } };
-			}
-			const args = ["--yes", "merge", "--format", "json"];
-			if (params.noSquash) args.push("--no-squash");
-			if (params.noCommit) args.push("--no-commit");
-			if (params.noRebase) args.push("--no-rebase");
-			if (params.noRemove) args.push("--no-remove");
-			if (params.noFf) args.push("--no-ff");
-			if (params.stage) args.push("--stage", params.stage);
-			if (params.noHooks) args.push("--no-hooks");
-			if (params.target) args.push(params.target);
+			if (!(await confirmMutation(ctx, "Merge Worktrunk branch?", `wt merge ${params.target ?? "<default>"}`))) return { content: [{ type: "text", text: "Cancelled by user." }], details: { cancelled: true } };
+			const args = ["merge", "--format", "json"];
+			appendOption(args, params.noSquash, "--no-squash");
+			appendOption(args, params.noCommit, "--no-commit");
+			appendOption(args, params.noRebase, "--no-rebase");
+			appendOption(args, params.noRemove, "--no-remove");
+			appendOption(args, params.noFf, "--no-ff");
+			appendOption(args, params.stage, "--stage", params.stage);
+			appendOption(args, params.noHooks, "--no-hooks");
+			appendOption(args, params.target, params.target);
 			return runWt(pi, args, ctx, params.cwd);
 		},
 	});
