@@ -22,10 +22,9 @@ alias gco="git checkout"
 alias branch="git branch"
 alias stash="git stash"
 alias pop="git stash pop"
-# JetBrains
-alias ws='nohup webstorm . > /dev/null 2>&1 &'
-alias py='nohup pycharm . > /dev/null 2>&1 &'
-alias rr='nohup rustrover . > /dev/null 2>&1 &'
+alias merge="git merge"
+alias pn="git push --no-verify"
+alias pnf="git push --no-verify --force-with-lease"
 
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"  # This loads nvm
