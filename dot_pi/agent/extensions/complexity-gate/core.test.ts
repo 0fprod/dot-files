@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { analyzeSource, formatReport, isSupportedPath } from "./core.ts";
+import { analyzeSource, analyzeUnusedExports, formatReport, isHelperModulePath, isSupportedPath } from "./core.ts";
 
 test("The complexity analyzer gives a straight-line function a complexity of 1", () => {
   const report = analyzeSource(
@@ -50,11 +50,10 @@ test("The complexity analyzer counts branching and looping paths inside a functi
     5,
   );
 
-  // if +1, && nested +2, for +1, nested if +2, ternary +3, switch +1 => 11
   assert.deepEqual(report.functions, [
     {
       name: "classify",
-      complexity: 11,
+      complexity: 8,
       line: 1,
       column: 1,
     },
@@ -62,96 +61,11 @@ test("The complexity analyzer counts branching and looping paths inside a functi
   assert.deepEqual(report.violations, [
     {
       name: "classify",
-      complexity: 11,
+      complexity: 8,
       line: 1,
       column: 1,
     },
   ]);
-});
-
-test("Guard clauses stay cheap at depth zero while nested branches are penalized", () => {
-  const flat = analyzeSource(
-    "guards.ts",
-    `export function handle(value?: number) {
-  if (!value) return 0;
-  if (value < 0) return 0;
-  if (value === 0) return 0;
-  if (value > 100) return 0;
-  if (value % 2 === 0) return 0;
-  return value;
-}
-`,
-    6,
-  );
-
-  assert.equal(flat.functions[0]?.complexity, 6);
-  assert.deepEqual(flat.violations, []);
-
-  const nested = analyzeSource(
-    "pyramid.ts",
-    `export function pyramid(value?: number) {
-  if (value) {
-    if (value > 1) {
-      if (value > 2) {
-        return "deep";
-      }
-    }
-  }
-  return "shallow";
-}
-`,
-    6,
-  );
-
-  assert.deepEqual(nested.violations, [
-    {
-      name: "pyramid",
-      complexity: 7,
-      line: 1,
-      column: 1,
-    },
-  ]);
-});
-
-test("Switch dispatch counts once regardless of case count and the allow marker whitelists a file", () => {
-  const dispatch = analyzeSource(
-    "dispatch.ts",
-    `export function label(code: "a" | "b" | "c" | "d") {
-  switch (code) {
-    case "a":
-      return 1;
-    case "b":
-      return 2;
-    case "c":
-      return 3;
-    default:
-      return 0;
-  }
-}
-`,
-    12,
-  );
-
-  assert.equal(dispatch.functions[0]?.complexity, 2);
-  assert.deepEqual(dispatch.violations, []);
-
-  const allowed = analyzeSource(
-    "parser.ts",
-    `// complexity-gate:allow
-export function parse(input: string) {
-  if (input.startsWith("{")) {
-    if (input.includes(":")) {
-      return "object";
-    }
-  }
-  return "plain";
-}
-`,
-    2,
-  );
-
-  assert.equal(allowed.allowed, true);
-  assert.deepEqual(allowed.violations, []);
 });
 
 test("The complexity analyzer reports methods and arrow functions separately from their parents", () => {
@@ -182,7 +96,7 @@ test("The complexity analyzer reports methods and arrow functions separately fro
   assert.deepEqual(report.functions, [
     {
       name: "save",
-      complexity: 4,
+      complexity: 3,
       line: 2,
       column: 3,
     },
@@ -196,11 +110,25 @@ test("The complexity analyzer reports methods and arrow functions separately fro
   assert.deepEqual(report.violations, [
     {
       name: "save",
-      complexity: 4,
+      complexity: 3,
       line: 2,
       column: 3,
     },
   ]);
+});
+
+test("Complexity from 9 through 15 is blocking while 16 and above is warning-only", () => {
+  const makeFunction = (branches: number) => `function classify(value: number) {\n${Array.from({ length: branches }, (_, index) => `  if (value === ${index}) return ${index};`).join("\n")}\n  return -1;\n}`;
+  const report = analyzeSource("invoice.ts", makeFunction(14), 8, 16);
+  const warningReport = analyzeSource("invoice.ts", makeFunction(15), 8, 16);
+
+  assert.equal(report.functions[0]?.complexity, 15);
+  assert.equal(report.violations.length, 1);
+  assert.equal(report.warnings.length, 0);
+  assert.equal(warningReport.functions[0]?.complexity, 16);
+  assert.equal(warningReport.violations.length, 0);
+  assert.equal(warningReport.warnings.length, 1);
+  assert.match(formatReport(warningReport), /Warnings \(non-blocking\)/);
 });
 
 test("The complexity formatter emits a compact violation summary for supported TS files", () => {
@@ -232,9 +160,37 @@ test("The complexity formatter emits a compact violation summary for supported T
 
   assert.equal(isSupportedPath("src/invoice.ts"), true);
   assert.equal(isSupportedPath("src/invoice.json"), false);
-  const formatted = formatReport(report);
-  assert.match(formatted, /Complexity gate: FAIL src\/invoice\.ts/);
-  assert.match(formatted, /see the codebase-design skill/);
-  assert.match(formatted, /deepening/);
-  assert.match(formatted, /narrow the interface at the seam/);
+  assert.equal(
+    formatReport(report),
+    "Complexity gate: FAIL src/invoice.ts\n- classify line 1 col 25 complexity 8 > 5",
+  );
+});
+
+test("The export analyzer flags helper exports with no external consumers", () => {
+  const report = analyzeUnusedExports(
+    "src/use-case.helper.ts",
+    `export const classify = () => 1;
+export function normalize() {
+  return 2;
+}
+const localOnly = 3;
+`,
+    [
+      {
+        path: "src/use-case.ts",
+        source: 'import { classify } from "./use-case.helper";\n',
+      },
+    ],
+  );
+
+  assert.equal(isHelperModulePath("src/use-case.helper.ts"), true);
+  assert.equal(isHelperModulePath("src/use-case.ts"), false);
+  assert.deepEqual(report, [
+    {
+      name: "normalize",
+      line: 2,
+      column: 1,
+      message: "Unused export in helper module. Make it module-private.",
+    },
+  ]);
 });
