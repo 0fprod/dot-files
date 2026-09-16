@@ -9,8 +9,25 @@ import {
 	truncateTail,
 	type ExtensionAPI,
 } from "@earendil-works/pi-coding-agent";
+import { cleanupMergedTracker, cleanupMessage, readPullRequestStatus } from "./agent-launcher/github-tracker.ts";
 
-const GH_TOOL_NAMES = new Set(["gh_pr_view", "gh_pr_create", "gh_pr_edit", "gh_pr_ready"]);
+const GH_TOOL_NAMES = new Set(["gh_pr_view", "gh_pr_create", "gh_pr_edit", "gh_pr_ready", "gh_pr_merge", "gh_pr_unblock"]);
+
+type PullRequestEditParams = {
+	selector?: string | number;
+	repo?: string;
+	title?: string;
+	body?: string;
+	base?: string;
+	addLabels?: string[];
+	removeLabels?: string[];
+	addAssignees?: string[];
+	removeAssignees?: string[];
+	addReviewers?: string[];
+	removeReviewers?: string[];
+	milestone?: string;
+	removeMilestone?: boolean;
+};
 
 const DEFAULT_PR_FIELDS = [
 	"number",
@@ -90,9 +107,61 @@ function pushSelector(args: string[], selector?: string | number) {
 	if (selector !== undefined && selector !== null && `${selector}`.trim()) args.push(`${selector}`);
 }
 
+function pushFlag(args: string[], enabled: boolean | undefined, flag: string): void {
+	if (enabled) args.push(flag);
+}
+
+async function confirmTrackerCleanup(ctx: { hasUI: boolean; ui: { confirm(title: string, message: string): Promise<boolean> } }, issuePath: string): Promise<boolean> {
+	if (!ctx.hasUI) return true;
+	return ctx.ui.confirm("Clear merged tracker dependency references?", issuePath);
+}
+
 function pushCsvFlag(args: string[], flag: string, values?: string[]) {
 	if (!values || values.length === 0) return;
 	args.push(flag, values.join(","));
+}
+
+function pushValue(args: string[], flag: string, value?: string): void {
+	if (value) args.push(flag, value);
+}
+
+function hasPullRequestEdit(params: PullRequestEditParams): boolean {
+	return [
+		params.title,
+		params.body !== undefined,
+		params.base,
+		params.addLabels?.length,
+		params.removeLabels?.length,
+		params.addAssignees?.length,
+		params.removeAssignees?.length,
+		params.addReviewers?.length,
+		params.removeReviewers?.length,
+		params.milestone,
+		params.removeMilestone,
+	].some(Boolean);
+}
+
+async function buildPullRequestEditArgs(params: PullRequestEditParams): Promise<string[]> {
+	const args = ["pr", "edit"];
+	pushSelector(args, params.selector);
+	pushValue(args, "--title", params.title);
+	pushValue(args, "--base", params.base);
+	if (params.body !== undefined) {
+		const dir = await mkdtemp(join(tmpdir(), "pi-gh-pr-body-"));
+		const bodyPath = join(dir, "body.md");
+		await writeFile(bodyPath, params.body, "utf8");
+		args.push("--body-file", bodyPath);
+	}
+	pushCsvFlag(args, "--add-label", params.addLabels);
+	pushCsvFlag(args, "--remove-label", params.removeLabels);
+	pushCsvFlag(args, "--add-assignee", params.addAssignees);
+	pushCsvFlag(args, "--remove-assignee", params.removeAssignees);
+	pushCsvFlag(args, "--add-reviewer", params.addReviewers);
+	pushCsvFlag(args, "--remove-reviewer", params.removeReviewers);
+	pushValue(args, "--milestone", params.milestone);
+	if (params.removeMilestone) args.push("--remove-milestone");
+	pushRepo(args, params.repo);
+	return args;
 }
 
 export default function githubCliExtension(pi: ExtensionAPI) {
@@ -211,35 +280,11 @@ export default function githubCliExtension(pi: ExtensionAPI) {
 			removeMilestone: Type.Optional(Type.Boolean({ description: "Remove milestone." })),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const args = ["pr", "edit"];
-			pushSelector(args, params.selector);
-			if (params.title) args.push("--title", params.title);
-			if (params.base) args.push("--base", params.base);
-			if (params.body !== undefined) {
-				const dir = await mkdtemp(join(tmpdir(), "pi-gh-pr-body-"));
-				const path = join(dir, "body.md");
-				await writeFile(path, params.body, "utf8");
-				args.push("--body-file", path);
+			if (!hasPullRequestEdit(params)) throw new Error("No PR edits requested.");
+			const args = await buildPullRequestEditArgs(params);
+			if (ctx.hasUI && !(await ctx.ui.confirm("Edit GitHub PR?", ["gh", ...args].join(" ")))) {
+				return { content: [{ type: "text" as const, text: "Cancelled by user." }], details: { cancelled: true } };
 			}
-			pushCsvFlag(args, "--add-label", params.addLabels);
-			pushCsvFlag(args, "--remove-label", params.removeLabels);
-			pushCsvFlag(args, "--add-assignee", params.addAssignees);
-			pushCsvFlag(args, "--remove-assignee", params.removeAssignees);
-			pushCsvFlag(args, "--add-reviewer", params.addReviewers);
-			pushCsvFlag(args, "--remove-reviewer", params.removeReviewers);
-			if (params.milestone) args.push("--milestone", params.milestone);
-			if (params.removeMilestone) args.push("--remove-milestone");
-			pushRepo(args, params.repo);
-
-			if (args.length <= 2 + (params.selector !== undefined ? 1 : 0) + (params.repo ? 2 : 0)) {
-				throw new Error("No PR edits requested.");
-			}
-
-			if (ctx.hasUI) {
-				const ok = await ctx.ui.confirm("Edit GitHub PR?", ["gh", ...args].join(" "));
-				if (!ok) return { content: [{ type: "text" as const, text: "Cancelled by user." }], details: { cancelled: true } };
-			}
-
 			return runGh(pi, args, { cwd: params.cwd || ctx.cwd, signal });
 		},
 	});
@@ -273,19 +318,81 @@ export default function githubCliExtension(pi: ExtensionAPI) {
 	});
 
 	pi.registerTool({
+		name: "gh_pr_merge",
+		label: "GitHub PR Merge",
+		description: "Merge a GitHub pull request and, only after GitHub confirms MERGED, clear its local-tracker dependency references. Mutating; confirms in UI when available.",
+		parameters: Type.Object({
+			selector: Type.Optional(Type.Union([
+				Type.String({ description: "PR number, URL, branch, or omitted for current branch PR." }),
+				Type.Number(),
+			])),
+			repo: Type.Optional(Type.String({ description: "Repository in [HOST/]OWNER/REPO format." })),
+			cwd: Type.Optional(Type.String({ description: "Git repository cwd. Defaults to Pi cwd." })),
+			issuePath: Type.String({ description: "Absolute or cwd-relative completed local-tracker issue path." }),
+			method: Type.Optional(StringEnum(["squash", "merge", "rebase"] as const, { description: "Merge method. Defaults to squash." })),
+			deleteBranch: Type.Optional(Type.Boolean({ description: "Delete the head branch after merging." })),
+			auto: Type.Optional(Type.Boolean({ description: "Enable GitHub auto-merge instead of merging immediately." })),
+		}),
+		async execute(_id, params, signal, onUpdate, ctx) {
+			const args = ["pr", "merge"];
+			pushSelector(args, params.selector);
+			args.push(`--${params.method ?? "squash"}`);
+			pushFlag(args, params.deleteBranch, "--delete-branch");
+			pushFlag(args, params.auto, "--auto");
+			pushRepo(args, params.repo);
+			if (ctx.hasUI && !(await ctx.ui.confirm("Merge GitHub PR and clear merged tracker dependencies?", ["gh", ...args].join(" ")))) {
+				return { content: [{ type: "text" as const, text: "Cancelled by user." }], details: { cancelled: true } };
+			}
+			const merged = await runGh(pi, args, { cwd: params.cwd || ctx.cwd, signal });
+			if (merged.details.exitCode !== 0) return merged;
+			const cleanup = await cleanupMergedTracker(pi, { selector: params.selector, repo: params.repo, cwd: params.cwd, issuePath: params.issuePath }, signal, onUpdate, ctx.cwd);
+			return { content: [...merged.content, { type: "text" as const, text: cleanupMessage(cleanup) }], details: { merge: merged.details, pullRequest: cleanup.status, tracker: cleanup.cleanup } };
+		},
+	});
+
+	pi.registerTool({
+		name: "gh_pr_unblock",
+		label: "Clear Merged Tracker Dependencies",
+		description: "Verify a GitHub pull request is MERGED, then clear only its references from downstream local-tracker issues. Open, draft, and unmerged PRs are never modified.",
+		parameters: Type.Object({
+			selector: Type.Optional(Type.Union([
+				Type.String({ description: "PR number, URL, branch, or omitted for current branch PR." }),
+				Type.Number(),
+			])),
+			repo: Type.Optional(Type.String({ description: "Repository in [HOST/]OWNER/REPO format." })),
+			cwd: Type.Optional(Type.String({ description: "Git repository cwd. Defaults to Pi cwd." })),
+			issuePath: Type.String({ description: "Absolute or cwd-relative completed local-tracker issue path." }),
+		}),
+		async execute(_id, params, signal, onUpdate, ctx) {
+			const trackerParams = { selector: params.selector, repo: params.repo, cwd: params.cwd, issuePath: params.issuePath };
+			const status = await readPullRequestStatus(pi, trackerParams, signal, ctx.cwd);
+			if (status.state !== "MERGED") {
+				return { content: [{ type: "text" as const, text: cleanupMessage({ status }) }], details: { pullRequest: status, tracker: undefined } };
+			}
+			if (!(await confirmTrackerCleanup(ctx, params.issuePath))) {
+				return { content: [{ type: "text" as const, text: "Tracker cleanup cancelled by user." }], details: { cancelled: true, pullRequest: status } };
+			}
+			const verified = await cleanupMergedTracker(pi, trackerParams, signal, onUpdate, ctx.cwd);
+			return { content: [{ type: "text" as const, text: cleanupMessage(verified) }], details: { pullRequest: verified.status, tracker: verified.cleanup } };
+		},
+	});
+
+	pi.registerTool({
 		name: "github_tools",
 		label: "GitHub Tools",
-		description: "Search and enable GitHub CLI PR tools.",
-		promptSnippet: "Search and enable GitHub CLI PR tools for reading/creating/editing pull requests",
+		description: "Search and enable GitHub CLI PR and merged local-tracker dependency tools.",
+		promptSnippet: "Search and enable GitHub CLI PR and merged local-tracker dependency tools",
 		promptGuidelines: [
 			"Use github_tools when the user asks to read PRs, create PRs, read PR comments/reviews, edit PR metadata, change PR labels/assignees/reviewers, or mark a PR ready/draft with GitHub CLI.",
 			"Use gh_pr_view for PR/comment/review reads before falling back to raw bash gh commands.",
 			"Use gh_pr_create to create PRs with title/body/base/head/draft/labels/assignees/reviewers; it confirms before execution when UI is available.",
 			"Use gh_pr_edit for PR title/body/base/labels/assignees/reviewers/milestone changes; mutating GitHub tools should only run when the user requested the change.",
 			"Use gh_pr_ready to mark PRs ready or draft; mutating GitHub tools confirm before execution when UI is available.",
+			"Use gh_pr_merge to merge a PR and clear tracker dependencies only after GitHub confirms MERGED.",
+			"Use gh_pr_unblock after a PR merged outside Pi; it verifies MERGED before changing local-tracker files and reports changed, skipped, and ambiguous references.",
 		],
 		parameters: Type.Object({
-			query: Type.String({ description: "Capability to search for, e.g. create PR, read PR comments, add labels, mark draft." }),
+			query: Type.String({ description: "Capability to search for, e.g. create PR, merge PR, clear merged tracker dependencies, read PR comments, add labels, mark draft." }),
 			limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 10 })),
 		}),
 		async execute(_id, params) {
