@@ -1,0 +1,9 @@
+{
+  "name": "pi-extension-agent-launcher",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "test": "node --experimental-strip-types --test *.test.ts"
+  }
+}
