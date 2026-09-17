@@ -20,7 +20,7 @@ export interface RolePolicy {
 
 const worktrunkTools = ["worktrunk_tools", "wt_list", "wt_switch", "wt_remove", "wt_merge"];
 const writerInstructions = `You are the Writer role. Implement exactly one approved local-tracker issue. Start behavior-changing implementation through /skill:temper. Read the complete issue, its linked repository spec, Workspace/AGENTS.md, repository AGENTS.md, CONTEXT.md files, and relevant domain context before editing. Work only in the selected repository and issue scope. Use the available Worktrunk extension tools for worktree operations; call worktrunk_tools to activate a specific wt tool when needed. Never approve Worktrunk hooks yourself or use --yes: stop and ask the user to review them with wt config approvals add. Do not launch agents. Do not modify gobl.fatturapa. Leave changes uncommitted; do not push, merge, or remove the workspace unless explicitly requested.`;
-const readerInstructions = `You are the Reader role. Review exactly one approved local-tracker issue within the scope stated by the launch instructions. Follow the review brief for which tracker documents to read; do not infer additional review scope. Inspect source, tests, diffs, and Git history as needed. Do not modify files, Git state, Jira, databases, or external systems. Do not launch agents. Report actionable findings ordered by severity with concrete paths and symbols.`;
+const readerInstructions = `You are the Reader role. Review exactly the scope stated by the launch instructions. Follow the review brief for which tracker documents to read; do not infer additional review scope. Inspect source, tests, diffs, and Git history as needed. Do not modify files, Git state, Jira, databases, or external systems. Do not launch agents. Report actionable findings ordered by severity with concrete paths and symbols.`;
 const researcherInstructions = `You are the Researcher role. Investigate exactly one approved local-tracker issue and its linked repository spec. Prefer local source, documentation, Git history, and read-only upstream repositories. If web navigation, rendered pages, screenshots, browser interaction, or web extraction is required, load and follow /skill:agent-browser. Do not load it unnecessarily. Do not modify files, Git state, Jira, databases, or external systems. Do not launch agents. Separate confirmed facts from inferences and cite concrete paths, symbols, commits, documentation pages, and URLs.`;
 
 export const ROLE_POLICIES: Record<AgentRole, RolePolicy> = {
@@ -47,6 +47,8 @@ export interface LaunchRequest {
   model: string;
   thinking: ThinkingLevel;
   additionalInstructions?: string;
+  readerAngle?: "standards" | "spec";
+  sessionName?: string;
 }
 
 export interface PaneRect { paneId: string; width: number; height: number; }
@@ -82,13 +84,15 @@ export function modelListContains(output: string, qualifiedModel: string): boole
 export function buildInitialPrompt(request: LaunchRequest, cwd: string): string {
   const temper = request.role === "writer" ? "/skill:temper " : "";
   const task = request.role === "writer" ? "Implement" : request.role === "reader" ? "Review" : "Research";
+  const standardsOnly = request.role === "reader" && request.readerAngle === "standards";
+  const target = standardsOnly ? "Review the supplied change target according to the launch brief." : `${task} exactly the one approved issue at:\n${request.issue.path}\n\nIts approved repository spec is:\n${request.issue.specPath}`;
   const optional = request.additionalInstructions?.trim()
     ? `\n\nAdditional instructions for this run (from the orchestrator):\n---\n${request.additionalInstructions}\n---`
     : "";
   const readingInstructions = request.role === "reader"
-    ? "Read the complete issue and any tracker documents explicitly named by the launch brief before acting; do not infer additional review scope."
+    ? "Follow the launch brief's document scope before acting; do not infer additional review scope."
     : "Read the complete issue, linked spec, and applicable AGENTS.md and CONTEXT.md files before acting.";
-  return `${temper}${task} exactly the one approved issue at:\n${request.issue.path}\n\nIts approved repository spec is:\n${request.issue.specPath}\n\nYou are running in:\n${cwd}\n\n${ROLE_POLICIES[request.role].systemInstructions}\n\n${readingInstructions}${optional}`;
+  return `${temper}${target}\n\nYou are running in:\n${cwd}\n\n${ROLE_POLICIES[request.role].systemInstructions}\n\n${readingInstructions}${optional}`;
 }
 
 export function buildPiCommand(request: LaunchRequest, sessionName: string, profilePromptPath: string): string {
@@ -115,7 +119,25 @@ export function repositoryPath(workspaceRoot: string, repository: RepositoryScop
   return path.join(workspaceRoot, repository === "web" ? "nomo-web-app" : "nomo-server-app");
 }
 
+type HerdrWorkspace = { workspace_id?: string; workspaceId?: string; label?: string };
+
+export function workspaceLabelForRepository(repository: RepositoryScope): string {
+  return repository === "web" ? "nomo-web-app" : "nomo-server-app";
+}
+
+export function workspaceIdForLabel(output: string, label: string): string {
+  let payload: { result?: { workspaces?: HerdrWorkspace[] }; workspaces?: HerdrWorkspace[] };
+  try { payload = JSON.parse(output) as typeof payload; } catch { throw new Error(`Herdr workspace list returned invalid JSON: ${output.trim()}`); }
+  const matches = (payload.result?.workspaces ?? payload.workspaces ?? []).filter((workspace) => workspace.label === label);
+  if (matches.length === 0) throw new Error(`Herdr workspace not found: ${label}`);
+  if (matches.length > 1) throw new Error(`Herdr workspace label is ambiguous: ${label}`);
+  const workspaceId = matches[0]?.workspace_id ?? matches[0]?.workspaceId;
+  if (!workspaceId) throw new Error(`Herdr workspace has no ID: ${label}`);
+  return workspaceId;
+}
+
 export function sessionLabel(request: LaunchRequest): string {
+  if (request.sessionName) return request.sessionName.slice(0, 80);
   const key = request.issue.jiraId ?? request.issue.title;
   return `${request.role}: ${key} ${request.issue.title}`.slice(0, 80);
 }

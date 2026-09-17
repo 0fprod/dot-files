@@ -2,7 +2,7 @@ import * as fs from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { getAgentDir, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import type { IssueContext, LaunchRequest } from "./core.ts";
-import { buildInitialPrompt, buildPiCommand, choosePanePlacement, modelListContains, ROLE_POLICIES, sessionLabel, shellQuote } from "./core.ts";
+import { buildInitialPrompt, buildPiCommand, choosePanePlacement, modelListContains, ROLE_POLICIES, sessionLabel, shellQuote, workspaceIdForLabel, workspaceLabelForRepository } from "./core.ts";
 import type { WorkspaceResult } from "./workspaces.ts";
 import { acquireWriterLease, type WriterLease } from "./writer-lock.ts";
 
@@ -43,6 +43,13 @@ async function logPath(role: string): Promise<string> {
 function paneId(pane: Pane): string | undefined { return pane.pane_id ?? pane.paneId; }
 function tabId(pane: Pane): string | undefined { return pane.tab_id ?? pane.tabId; }
 
+async function destinationWorkspace(pi: ExtensionAPI, repository: IssueContext["repository"], signal?: AbortSignal): Promise<string> {
+  const label = workspaceLabelForRepository(repository);
+  const result = await pi.exec("herdr", ["workspace", "list"], { signal, timeout: 10_000 });
+  if (result.code !== 0) throw new Error(`Reading Herdr workspaces failed: ${(result.stderr || result.stdout).trim()}`);
+  return workspaceIdForLabel(result.stdout, label);
+}
+
 function panesFrom(result: CommandResult): Pane[] {
   const payload = parseJson<{ result?: { panes?: Pane[] }; panes?: Pane[] }>(result, "Reading Herdr panes");
   return payload.result?.panes ?? payload.panes ?? [];
@@ -68,7 +75,10 @@ async function createTab(pi: ExtensionAPI, cwd: string, label: string, origin: O
 }
 
 async function visiblePane(pi: ExtensionAPI, request: LaunchRequest, workspace: WorkspaceResult, origin: Origin, signal?: AbortSignal): Promise<{ tabId?: string; paneId: string }> {
-  if (request.location === "tab") return createTab(pi, workspace.cwd, sessionLabel(request), origin, signal);
+  if (request.location === "tab") {
+    const destination = await destinationWorkspace(pi, request.issue.repository, signal);
+    return createTab(pi, workspace.cwd, sessionLabel(request), { ...origin, workspaceId: destination }, signal);
+  }
   const layoutResult = await pi.exec("herdr", ["pane", "layout", "--pane", origin.paneId], { signal, timeout: 10_000 });
   const payload = parseJson<{ result: { layout: { tab_id: string; panes: Array<{ pane_id: string; rect: { width: number; height: number } }> } } }>(layoutResult, "Reading Herdr pane layout");
   if (payload.result.layout.tab_id !== origin.tabId) throw new Error("The orchestrator pane moved tabs during launch");

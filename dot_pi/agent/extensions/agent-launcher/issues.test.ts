@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -23,6 +23,21 @@ test("discovery accepts the documented issue shape without a Repository heading"
     assert.equal(issues.length, 1);
     assert.equal(issues[0]?.jiraId, "ITA-123");
     assert.equal(issues[0]?.specPath, path.join(root, "local-tracker/server/specs/ITA-123.md"));
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("discovery treats a bulleted no-blocker marker as unblocked", async () => {
+  const { root } = await fixture();
+  try {
+    const issuePath = path.join(root, "local-tracker/server/issues/ITA-123-01-build.md");
+    const content = await readFile(issuePath, "utf8");
+    await writeFile(issuePath, content.replace("None - can start immediately.", "- None - can start immediately."));
+
+    const issue = (await discoverIssues(root, "server"))[0];
+    assert.ok(issue);
+    await validateIssue(issue, true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

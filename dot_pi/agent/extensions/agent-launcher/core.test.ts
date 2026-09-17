@@ -35,8 +35,14 @@ test("Reader kickoff follows the review brief for document scope", () => {
   assert.doesNotMatch(prompt, /^\/skill:temper/);
   assert.ok(prompt.includes(ROLE_POLICIES.reader.systemInstructions));
   assert.doesNotMatch(ROLE_POLICIES.reader.systemInstructions, /linked repository spec/);
-  assert.match(prompt, /documents explicitly named by the launch brief/);
+  assert.match(prompt, /launch brief's document scope/);
   assert.doesNotMatch(prompt, /Read the complete issue, linked spec/);
+});
+
+test("Standards kickoff does not include issue or spec paths", () => {
+  const prompt = buildInitialPrompt({ ...request, role: "reader", readerAngle: "standards" }, "/worktree/ITA-123");
+  assert.match(prompt, /supplied change target/);
+  assert.doesNotMatch(prompt, /local-tracker\/server\/(issues|specs)/);
 });
 
 test("Researcher kickoff remains read-only and reads its linked spec", () => {

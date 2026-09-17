@@ -51,8 +51,9 @@ function extractSpecPath(parent: string, workspaceRoot: string, repository: Repo
 
 function blockerValue(content: string): string | undefined {
   const value = field(content, "Blocked by");
-  if (!value || /^none(?:\s|$)/i.test(value)) return undefined;
-  return value.replace(/\s+/g, " ").slice(0, 160);
+  const normalized = value?.replace(/^[-*+]\s+/, "").trim();
+  if (!normalized || /^none(?:\s|$)/i.test(normalized)) return undefined;
+  return normalized.replace(/\s+/g, " ").slice(0, 160);
 }
 
 async function parseIssue(filePath: string, workspaceRoot: string, repository: RepositoryScope): Promise<IssueContext> {

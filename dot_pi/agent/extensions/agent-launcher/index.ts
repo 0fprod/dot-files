@@ -3,6 +3,7 @@ import { collectLaunchRequest } from "./wizard.ts";
 import { findWorkspaceRoot } from "./issues.ts";
 import { launchAgent, validateModel } from "./launch.ts";
 import { prepareWorkspace, worktreePreview } from "./workspaces.ts";
+import { runReviewCommand } from "./review.ts";
 
 const PROGRESS_WIDGET = "agent-launcher-progress";
 const SPINNER_FRAMES = ["|", "/", "-", "\\"];
@@ -38,6 +39,14 @@ function createLaunchProgress(ctx: ExtensionContext): LaunchProgress {
 }
 
 export default function agentLauncher(pi: ExtensionAPI): void {
+  pi.registerCommand("review", {
+    description: "Launch Standards and Spec Reader reviews for a Writer worktree",
+    handler: async (args, ctx) => {
+      try { await runReviewCommand(pi, ctx, args); }
+      catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
+    },
+  });
+
   pi.registerCommand("agent", {
     description: "Launch one fresh Reader, Researcher, or Writer session for an approved issue",
     handler: async (args, ctx) => {
